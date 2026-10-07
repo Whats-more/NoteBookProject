@@ -7,7 +7,11 @@
     "dev": "nuxt dev",
     "generate": "nuxt generate",
     "preview": "nuxt preview",
+    "deploy": "nuxt generate && wrangler pages deploy .output/public --project-name notebook-project --branch main",
     "postinstall": "nuxt prepare"
+  },
+  "devDependencies": {
+    "wrangler": "^4.147.0"
   },
   "dependencies": {
     "@pinia/nuxt": "^1.0.2",
