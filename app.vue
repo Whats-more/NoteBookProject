@@ -1,20 +1,46 @@
 <!-- ============================================================
-  NoteBookProject — 主页面 (app/app.vue)
-  双栏流转架构：
-  - 左侧：待论证纯标题孵化区 (+ 添加标题、草稿展开、initial commit 流转)
-  - 右侧：已论证讨论与版本树演进区 (三段式展开、SVG Git-like DAG、分支分叉、Merge、Split)
+  NoteBookProject — 主页面 (app.vue)
+  双栏流转架构与响应式移动端适配：
+  - 桌面端：双栏左右并排展示
+  - 移动端：顶部 Tab 无缝切换待论证区与已论证区，全宽触控优化
+  - 功能：标题孵化、Commit 流转、三段式卡片展开、版本树、多选 Merge、Split 拆分、回收站
 ============================================================ -->
 <template>
   <div class="app-layout" @keydown.esc="onEscKey" tabindex="-1">
     <!-- 顶部状态导航栏 -->
     <AppHeader @open-trash="isTrashOpen = true" />
 
+    <!-- 移动端专属 Tab 栏（PC 端隐藏） -->
+    <div class="mobile-tab-bar">
+      <button
+        class="mobile-tab-btn"
+        :class="{ active: activeMobileTab === 'left' }"
+        @click="activeMobileTab = 'left'"
+      >
+        <span>待论证孵化</span>
+        <span class="count-pill">{{ store.leftCards.length }}</span>
+      </button>
+
+      <button
+        class="mobile-tab-btn"
+        :class="{ active: activeMobileTab === 'right' }"
+        @click="activeMobileTab = 'right'"
+      >
+        <span>已论证讨论与版本树</span>
+        <span class="count-pill accent">{{ store.rightCards.length }}</span>
+      </button>
+    </div>
+
     <!-- 双栏工作区容器 -->
     <main class="columns-container">
       <!-- ==============================================
            左侧栏：纯标题孵化区 (Staging Area)
       =============================================== -->
-      <section class="column column-left" aria-label="待论证纯标题孵化区">
+      <section
+        class="column column-left"
+        :class="{ 'mobile-hidden': activeMobileTab !== 'left' }"
+        aria-label="待论证纯标题孵化区"
+      >
         <header class="column-header">
           <div class="col-title-group">
             <h2 id="staging-heading">待论证议题</h2>
@@ -49,7 +75,11 @@
       <!-- ==============================================
            右侧栏：已论证讨论区 (Discussion & Version Tree)
       =============================================== -->
-      <section class="column column-right" aria-label="已论证讨论区">
+      <section
+        class="column column-right"
+        :class="{ 'mobile-hidden': activeMobileTab !== 'right' }"
+        aria-label="已论证讨论区"
+      >
         <header class="column-header">
           <div class="col-title-group">
             <h2 id="discussion-heading">已论证讨论与版本树</h2>
@@ -127,7 +157,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, watch } from 'vue'
 import { useNotebookStore } from '~/stores/notebook'
 import AppHeader from '~/components/layout/AppHeader.vue'
 import StagingCard from '~/components/card/StagingCard.vue'
@@ -138,10 +168,25 @@ import TrashModal from '~/components/layout/TrashModal.vue'
 const store = useNotebookStore()
 const isTrashOpen = ref(false)
 const splitRevertGroupConfirm = ref<string | null>(null)
+const activeMobileTab = ref<'left' | 'right'>('right')
 
 onMounted(() => {
   store.initStore()
+  // 如果左侧有待处理卡片且右侧为空，移动端默认切到左侧
+  if (store.rightCards.length === 0 && store.leftCards.length > 0) {
+    activeMobileTab.value = 'left'
+  }
 })
+
+// 当右侧新增卡片时，移动端自动切换到右侧方便查看
+watch(
+  () => store.rightCards.length,
+  (newCount, oldCount) => {
+    if (newCount > (oldCount || 0)) {
+      activeMobileTab.value = 'right'
+    }
+  }
+)
 
 function handleAddStaging() {
   store.addStagingCard()
@@ -166,6 +211,51 @@ function confirmRevertSplit() {
 </script>
 
 <style scoped>
+/* 移动端 Tab 栏 */
+.mobile-tab-bar {
+  display: none;
+}
+
+@media (max-width: 860px) {
+  .mobile-tab-bar {
+    display: flex;
+    background: var(--color-bg-secondary);
+    border-bottom: 1px solid var(--color-border);
+    padding: var(--space-xs) var(--space-sm);
+    gap: var(--space-xs);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+  }
+
+  .mobile-tab-btn {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-xs);
+    padding: var(--space-sm);
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--color-text-secondary);
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    transition: all var(--duration-fast) var(--ease-out);
+  }
+
+  .mobile-tab-btn.active {
+    color: var(--color-accent);
+    background: var(--color-bg-tertiary);
+    box-shadow: 0 0 12px var(--color-accent-muted);
+  }
+
+  .column.mobile-hidden {
+    display: none !important;
+  }
+}
+
 .col-title-group {
   display: flex;
   align-items: center;

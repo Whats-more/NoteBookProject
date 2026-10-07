@@ -48,21 +48,23 @@
         <!-- 分割线 -->
         <hr class="divider" />
 
-        <!-- Change Log -->
+        <!-- Change Log (必填) -->
         <div class="changelog-section">
-          <label class="changelog-label">Change Log</label>
+          <label class="changelog-label">
+            Change Log <span class="required-star">*</span>
+          </label>
           <input
             :id="`staging-changelog-${card.id}`"
             v-model="draftChangeLog"
             class="input"
-            placeholder="initial commit"
+            placeholder="initial commit (必填)"
             @input="onDraftChange"
           />
         </div>
 
         <!-- 底部操作栏 -->
         <div class="card-actions">
-          <span class="action-hint">填写标题与正文后提交</span>
+          <span class="action-hint">标题、正文及 Change Log 均为必填</span>
           <button
             :id="`staging-commit-${card.id}`"
             class="btn btn-primary"
@@ -96,7 +98,7 @@ const isExpanded = ref(false)
 // 本地草稿响应式
 const draftTitle = ref(props.card.draft.title)
 const draftContent = ref(props.card.draft.content)
-const draftChangeLog = ref(props.card.draft.changeLog)
+const draftChangeLog = ref(props.card.draft.changeLog || 'initial commit')
 
 watch(
   () => props.card.draft,
@@ -111,7 +113,11 @@ watch(
 )
 
 const canCommit = computed(() => {
-  return draftTitle.value.trim().length > 0 && draftContent.value.trim().length > 0
+  return (
+    draftTitle.value.trim().length > 0 &&
+    draftContent.value.trim().length > 0 &&
+    draftChangeLog.value.trim().length > 0
+  )
 })
 
 function toggleExpand() {
@@ -188,6 +194,11 @@ function handleDelete() {
   color: var(--color-text-tertiary);
   text-transform: uppercase;
   letter-spacing: 0.06em;
+}
+
+.required-star {
+  color: var(--color-danger);
+  margin-left: 2px;
 }
 
 .card-actions {

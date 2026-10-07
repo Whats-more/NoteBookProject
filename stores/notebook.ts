@@ -419,10 +419,23 @@ export const useNotebookStore = defineStore('notebook', {
       const now = Date.now()
       const mergedId = generateId()
 
-      // 复制所有源卡片的历史提交以保留完整拓扑
-      const allCommits = sourceCards.flatMap((c) =>
-        c.commits.map((commit) => ({ ...commit, cardId: mergedId }))
-      )
+      // 提取每个源卡片的最新提交 ID 作为合并汇聚父节点
+      const sourceTipIds = sourceCards
+        .map((c) => this.getLatestCommit(c)?.id)
+        .filter(Boolean) as string[]
+
+      // 复制所有源卡片的历史提交：给每个源卡片分配独立的分支名称以形成清晰的平行轨道，最终多合一汇聚
+      const allCommits: CommitNode[] = []
+      sourceCards.forEach((c, idx) => {
+        const branchPrefix = idx === 0 ? 'main' : `branch-${idx}`
+        c.commits.forEach((commit) => {
+          allCommits.push({
+            ...commit,
+            cardId: mergedId,
+            branchName: commit.branchName === 'main' ? branchPrefix : `${branchPrefix}-${commit.branchName}`,
+          })
+        })
+      })
 
       const mergedCard: DiscussionCard = {
         id: mergedId,
@@ -432,16 +445,18 @@ export const useNotebookStore = defineStore('notebook', {
         column: 'right',
         order: this.rightCards.length,
         commits: allCommits,
-        activeCommitId: '',
+        activeCommitId: '', // 处于工作区草稿状态
         draft: {
           title: mergedTitle,
           content: mergedContent,
           changeLog: `Merge: ${sourceCards.map((c) => c.currentTitle).join(' & ')}`,
           baseCommitId: '',
+          baseCommitIds: sourceTipIds,
         },
         tempMeta: {
           type: 'merge',
           sourceCardIds: this.selectedCardIds.slice(),
+          sourceTipIds: sourceTipIds,
         },
         createdAt: now,
         updatedAt: now,

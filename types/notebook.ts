@@ -41,6 +41,8 @@ export interface CardDraft {
   changeLog: string
   /** 当前编辑基于哪一个实节点的 ID */
   baseCommitId: string
+  /** 合并草稿时基于的多个父节点 ID 列表 */
+  baseCommitIds?: string[]
 }
 
 /**
@@ -61,6 +63,8 @@ export interface TempMeta {
   type: 'merge' | 'split'
   /** 合并来源卡片 ID 列表 */
   sourceCardIds?: string[]
+  /** 合并来源各分支尖端提交 ID 列表（用于多合一收敛） */
+  sourceTipIds?: string[]
   /** 拆分所属分组标识 */
   splitGroupKey?: string
   /** 拆分总份数 */

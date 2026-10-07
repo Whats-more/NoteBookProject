@@ -1,6 +1,7 @@
 <!-- ============================================================
   VersionTree.vue — 横向 Git-like 版本控制树 (SVG DAG)
-  支持：实节点/虚节点绘制、多分支轨道、贝塞尔连线、横向平移、分支标识
+  支持：实节点/虚节点绘制、多分支平行轨道与多合一 Merge 汇聚、
+       点击热区扩大、工作区草稿呼吸指示灯、节点 Tooltip
 ============================================================ -->
 <template>
   <div class="version-tree-wrapper">
@@ -12,9 +13,26 @@
           {{ branchNames.length }} 个活跃分支
         </span>
       </div>
+
+      <!-- 状态指示灯与图例 -->
       <div class="tree-legend">
-        <span class="legend-item"><span class="dot solid"></span> 历史提交</span>
-        <span class="legend-item"><span class="dot ghost"></span> 工作区草稿</span>
+        <span
+          class="legend-item"
+          :class="{ 'legend-dimmed': isDraftMode }"
+          title="点击查看历史提交快照"
+        >
+          <span class="dot solid"></span> 历史提交
+        </span>
+        <span
+          class="legend-item legend-draft"
+          :class="{ 'legend-active': isDraftMode }"
+          title="当前处于未提交的工作区草稿阶段"
+          @click="$emit('selectGhost')"
+        >
+          <span class="dot ghost" :class="{ pulse: isDraftMode }"></span>
+          <span class="legend-text">工作区草稿</span>
+          <span v-if="isDraftMode" class="badge-draft-glow">编辑中</span>
+        </span>
       </div>
     </div>
 
@@ -29,7 +47,6 @@
         class="version-tree-svg"
       >
         <defs>
-          <!-- 渐变与滤镜 -->
           <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
             <feGaussianBlur stdDeviation="3" result="blur" />
             <feComposite in="SourceGraphic" in2="blur" operator="over" />
@@ -64,14 +81,23 @@
           v-for="node in solidNodes"
           :key="node.commitId"
           class="node-group"
-          :class="{ 'node-active': node.commitId === activeCommitId }"
-          @click="$emit('selectCommit', node.commitId)"
+          :class="{ 'node-active': !isDraftMode && node.commitId === activeCommitId }"
+          @click.stop="$emit('selectCommit', node.commitId)"
         >
           <title>{{ getNodeTooltip(node.commitId) }}</title>
 
+          <!-- 扩大点击热区 (半径 18px，保证鼠标精确选取) -->
+          <circle
+            :cx="node.x"
+            :cy="node.y"
+            r="18"
+            fill="transparent"
+            style="cursor: pointer"
+          />
+
           <!-- 选中光晕 -->
           <circle
-            v-if="node.commitId === activeCommitId"
+            v-if="!isDraftMode && node.commitId === activeCommitId"
             :cx="node.x"
             :cy="node.y"
             r="14"
@@ -87,7 +113,7 @@
             class="node-circle"
             :style="{
               stroke: getBranchColor(node.branchName),
-              fill: node.commitId === activeCommitId ? getBranchColor(node.branchName) : 'var(--color-bg-secondary)'
+              fill: (!isDraftMode && node.commitId === activeCommitId) ? getBranchColor(node.branchName) : 'var(--color-bg-secondary)'
             }"
           />
 
@@ -98,7 +124,7 @@
             r="3.5"
             class="node-inner"
             :style="{
-              fill: node.commitId === activeCommitId ? '#ffffff' : getBranchColor(node.branchName)
+              fill: (!isDraftMode && node.commitId === activeCommitId) ? '#ffffff' : getBranchColor(node.branchName)
             }"
           />
 
@@ -112,7 +138,7 @@
             {{ node.commitId.slice(0, 6) }}
           </text>
 
-          <!-- 分支名轻量标注（若该节点为该分支起点或终点） -->
+          <!-- 分支名轻量标注 -->
           <text
             v-if="isBranchTip(node)"
             :x="node.x"
@@ -129,10 +155,29 @@
         <g
           v-if="ghostNode"
           class="node-group node-ghost"
-          :class="{ 'node-active': activeCommitId === '' || activeCommitId === 'draft' }"
-          @click="$emit('selectGhost')"
+          :class="{ 'node-active': isDraftMode }"
+          @click.stop="$emit('selectGhost')"
         >
-          <title>未提交的工作区草稿</title>
+          <title>未提交的工作区草稿 (点击切换回此节点)</title>
+
+          <!-- 扩大点击热区 -->
+          <circle
+            :cx="ghostNode.x"
+            :cy="ghostNode.y"
+            r="18"
+            fill="transparent"
+            style="cursor: pointer"
+          />
+
+          <!-- 草稿激活光晕 -->
+          <circle
+            v-if="isDraftMode"
+            :cx="ghostNode.x"
+            :cy="ghostNode.y"
+            r="14"
+            class="active-halo draft-active-halo"
+            :style="{ stroke: ghostNodeColor }"
+          />
 
           <!-- 虚线外圆 -->
           <circle
@@ -147,7 +192,7 @@
           <circle
             :cx="ghostNode.x"
             :cy="ghostNode.y"
-            r="3"
+            r="3.5"
             class="ghost-inner"
             :style="{ fill: ghostNodeColor }"
           />
@@ -180,9 +225,13 @@ const props = withDefaults(
     commits: CommitNode[]
     activeCommitId: string
     showGhost?: boolean
+    mergeParentIds?: string[]
+    isDraftActive?: boolean
   }>(),
   {
     showGhost: true,
+    mergeParentIds: () => [],
+    isDraftActive: false,
   }
 )
 
@@ -211,7 +260,6 @@ const BRANCH_PALETTE = [
 
 function getBranchColor(branchName: string): string {
   if (branchName === 'main') return BRANCH_PALETTE[0]
-  // Hash 分支名称映射到调色板
   let hash = 0
   for (let i = 0; i < branchName.length; i++) {
     hash = (hash << 5) - hash + branchName.charCodeAt(i)
@@ -239,7 +287,6 @@ const branchLaneMap = computed(() => {
 const solidNodes = computed<ExtendedNodePosition[]>(() => {
   if (props.commits.length === 0) return []
 
-  // 按时间升序排序
   const sorted = [...props.commits].sort((a, b) => a.timestamp - b.timestamp)
 
   return sorted.map((c, idx) => {
@@ -261,7 +308,6 @@ const nodeMap = computed(() => {
   return new Map(solidNodes.value.map((n) => [n.commitId, n]))
 })
 
-// 检查节点是否为该分支的尖端（最新提交）
 function isBranchTip(node: ExtendedNodePosition): boolean {
   const commitsInBranch = props.commits.filter((c) => (c.branchName || 'main') === node.branchName)
   if (commitsInBranch.length === 0) return false
@@ -269,7 +315,17 @@ function isBranchTip(node: ExtendedNodePosition): boolean {
   return latestInBranch?.id === node.commitId
 }
 
-// 虚节点（草稿）计算
+// 是否处于草稿模式
+const isDraftMode = computed(() => {
+  return (
+    props.isDraftActive ||
+    !props.activeCommitId ||
+    props.activeCommitId === 'draft' ||
+    props.activeCommitId === ''
+  )
+})
+
+// 虚节点（草稿）计算：支持多合一 Merge 汇聚
 const ghostNode = computed<ExtendedNodePosition | null>(() => {
   if (!props.showGhost) return null
 
@@ -286,16 +342,30 @@ const ghostNode = computed<ExtendedNodePosition | null>(() => {
     }
   }
 
-  // 查看当前选中的节点
+  const maxCol = Math.max(...solidNodes.value.map((n) => n.col))
+
+  // 如果是 Merge 模式（多个源父节点汇聚）
+  if (props.mergeParentIds && props.mergeParentIds.length > 1) {
+    return {
+      commitId: 'draft',
+      isGhost: true,
+      col: maxCol + 1,
+      lane: 0, // 合并至主轨道
+      x: PADDING_X + (maxCol + 1) * NODE_GAP_X,
+      y: PADDING_Y + 0 * NODE_GAP_Y,
+      branchName: 'main',
+      parentIds: props.mergeParentIds,
+    }
+  }
+
+  // 常规情况：查看当前选中的节点
   const activeNode = solidNodes.value.find((n) => n.commitId === props.activeCommitId)
   const baseNode = activeNode || solidNodes.value[solidNodes.value.length - 1]
 
-  // 检查 baseNode 是否已有子节点（如果有，则会创建新分支；否则顺延当前分支）
   const hasChildren = solidNodes.value.some((n) => n.parentIds.includes(baseNode.commitId))
-  const maxCol = Math.max(...solidNodes.value.map((n) => n.col))
 
   if (hasChildren) {
-    // 分叉：放在新轨道
+    // 基于历史节点修改 -> 分叉新轨道
     const maxLane = Math.max(...solidNodes.value.map((n) => n.lane))
     const ghostLane = maxLane + 1
     return {
@@ -328,11 +398,11 @@ const ghostNodeColor = computed(() => {
   return getBranchColor(ghostNode.value.branchName)
 })
 
-// 连线计算
+// 连线计算：支持常规线性连线与多父节点汇聚连线
 const allEdges = computed(() => {
   const edges: { id: string; d: string; isGhost: boolean; color: string }[] = []
 
-  // 实节点之间的连线
+  // 实节点之间的连线（含多父节点 Merge 提交）
   for (const node of solidNodes.value) {
     for (const parentId of node.parentIds) {
       const fromNode = nodeMap.value.get(parentId)
@@ -350,7 +420,7 @@ const allEdges = computed(() => {
     }
   }
 
-  // 虚节点连线
+  // 虚节点（草稿）连线：若是多父节点合并，同时绘制多条汇聚虚线
   if (ghostNode.value && ghostNode.value.parentIds.length > 0) {
     const gn = ghostNode.value
     for (const parentId of gn.parentIds) {
@@ -372,7 +442,6 @@ const allEdges = computed(() => {
   return edges
 })
 
-// 轨道辅助横线
 const laneGuides = computed(() => {
   const maxLane = Math.max(
     ...solidNodes.value.map((n) => n.lane),
@@ -386,7 +455,6 @@ const laneGuides = computed(() => {
   return result
 })
 
-// 宽度与高度
 const svgWidth = computed(() => {
   const totalCols = ghostNode.value
     ? ghostNode.value.col + 1
@@ -431,6 +499,8 @@ function getNodeTooltip(commitId: string): string {
   justify-content: space-between;
   padding: 0 var(--space-xs);
   font-size: 0.75rem;
+  flex-wrap: wrap;
+  gap: var(--space-xs);
 }
 
 .tree-meta-info {
@@ -468,21 +538,48 @@ function getNodeTooltip(commitId: string): string {
 .legend-item {
   display: flex;
   align-items: center;
-  gap: 4px;
-  font-size: 0.6875rem;
+  gap: 5px;
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-out);
+}
+.legend-dimmed {
+  opacity: 0.5;
+}
+
+.legend-draft.legend-active {
+  color: var(--color-accent);
+  font-weight: 600;
+}
+
+.badge-draft-glow {
+  background: var(--color-accent-muted);
+  color: var(--color-accent);
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  font-size: 0.625rem;
+  font-weight: 700;
+  box-shadow: 0 0 8px var(--color-accent-glow);
 }
 
 .dot {
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   display: inline-block;
+  transition: all var(--duration-fast) var(--ease-out);
 }
 .dot.solid {
   background: var(--color-accent);
 }
 .dot.ghost {
-  border: 1px dashed var(--color-node-ghost);
+  border: 1.5px dashed var(--color-node-ghost);
+}
+.dot.ghost.pulse {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+  box-shadow: 0 0 10px 2px var(--color-accent-glow);
+  animation: dot-pulse 1.8s infinite;
 }
 
 .version-tree-container {
@@ -513,7 +610,7 @@ function getNodeTooltip(commitId: string): string {
 }
 .edge-ghost {
   stroke-dasharray: 5 4;
-  opacity: 0.65;
+  opacity: 0.75;
 }
 
 .node-group {
@@ -527,9 +624,13 @@ function getNodeTooltip(commitId: string): string {
 .active-halo {
   fill: none;
   stroke-width: 2.5;
-  stroke-dasharray: 2 3;
-  animation: rotateHalo 12s linear infinite;
-  opacity: 0.8;
+  stroke-dasharray: 3 3;
+  animation: rotateHalo 8s linear infinite;
+  opacity: 0.9;
+}
+
+.draft-active-halo {
+  filter: drop-shadow(0 0 6px var(--color-accent-glow));
 }
 
 @keyframes rotateHalo {
@@ -568,7 +669,7 @@ function getNodeTooltip(commitId: string): string {
 }
 .ghost-label {
   font-style: italic;
-  opacity: 0.7;
+  opacity: 0.8;
 }
 
 .branch-tag-text {
