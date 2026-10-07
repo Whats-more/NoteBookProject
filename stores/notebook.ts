@@ -244,7 +244,8 @@ export const useNotebookStore = defineStore('notebook', {
         branchName = 'main'
       } else {
         // 已有提交的卡片：确定父节点与是否分叉
-        const baseId = draft.baseCommitId || card.activeCommitId || (this.getLatestCommit(card)?.id ?? '')
+        const rawBaseId = draft.baseCommitId || card.activeCommitId
+        const baseId = (rawBaseId && rawBaseId !== 'draft') ? rawBaseId : (this.getLatestCommit(card)?.id ?? '')
         if (baseId) {
           parentIds = [baseId]
           const baseCommit = card.commits.find((c) => c.id === baseId)
@@ -374,15 +375,18 @@ export const useNotebookStore = defineStore('notebook', {
       this.saveToStorage()
     },
 
-    /** 切换回到最新草稿态 */
+    /** 切换回到草稿态 */
     selectGhostDraft(cardId: string) {
       const card = this.cards[cardId]
       if (!card) return
-      const latest = this.getLatestCommit(card)
-      card.activeCommitId = ''
-      if (latest && !card.draft.baseCommitId) {
-        card.draft.baseCommitId = latest.id
+      card.activeCommitId = 'draft'
+      if (!card.draft.baseCommitId) {
+        const latest = this.getLatestCommit(card)
+        if (latest) {
+          card.draft.baseCommitId = latest.id
+        }
       }
+      this.saveToStorage()
     },
 
     // ==========================

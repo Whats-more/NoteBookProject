@@ -160,10 +160,11 @@
         <section class="section-mid">
           <VersionTree
             :commits="card.commits"
-            :active-commit-id="card.activeCommitId"
+            :active-commit-id="effectiveActiveCommitId"
+            :base-commit-id="effectiveBaseCommitId"
             :show-ghost="true"
             :merge-parent-ids="card.tempMeta?.sourceTipIds || card.draft.baseCommitIds || []"
-            :is-draft-active="isDraftDirty || !card.activeCommitId || card.activeCommitId === 'draft'"
+            :is-draft-active="isDraftDirty"
             @select-commit="onSelectCommit"
             @select-ghost="onSelectGhost"
           />
@@ -172,19 +173,19 @@
           <div v-if="activeCommitSummary" class="commit-inspector">
             <div class="inspector-item">
               <span class="inspector-label">当前节点</span>
-              <span class="inspector-val font-mono">{{ activeCommitSummary.id.slice(0, 8) }}</span>
+              <span class="inspector-val font-mono">{{ isDraftDirty ? 'draft (草稿)' : activeCommitSummary.id.slice(0, 8) }}</span>
             </div>
             <div class="inspector-item">
               <span class="inspector-label">分支</span>
-              <span class="inspector-val font-mono">{{ activeCommitSummary.branchName }}</span>
+              <span class="inspector-val font-mono">{{ isBranchMode ? `${activeCommitSummary.branchName} ➔ 新分支` : activeCommitSummary.branchName }}</span>
             </div>
             <div class="inspector-item">
               <span class="inspector-label">Change Log</span>
-              <span class="inspector-val">{{ activeCommitSummary.changeLog }}</span>
+              <span class="inspector-val">{{ isDraftDirty ? (draftChangeLog || '(待填写)') : activeCommitSummary.changeLog }}</span>
             </div>
             <div class="inspector-item">
               <span class="inspector-label">时间</span>
-              <span class="inspector-val">{{ formatTimestamp(activeCommitSummary.timestamp) }}</span>
+              <span class="inspector-val">{{ isDraftDirty ? '工作区未提交' : formatTimestamp(activeCommitSummary.timestamp) }}</span>
             </div>
           </div>
         </section>
@@ -382,14 +383,14 @@ const draftTitle = ref(props.card.draft.title || props.card.currentTitle)
 const draftContent = ref(props.card.draft.content || props.card.currentContent)
 const draftChangeLog = ref(props.card.draft.changeLog || '')
 
-// 监听 card.draft 外部变化同步回本地
+// 监听 card.draft 外部变化同步回本地（避免正在输入时冲突）
 watch(
   () => props.card.draft,
   (newDraft) => {
     if (newDraft) {
-      draftTitle.value = newDraft.title
-      draftContent.value = newDraft.content
-      draftChangeLog.value = newDraft.changeLog
+      if (draftTitle.value !== newDraft.title) draftTitle.value = newDraft.title
+      if (draftContent.value !== newDraft.content) draftContent.value = newDraft.content
+      if (draftChangeLog.value !== newDraft.changeLog) draftChangeLog.value = newDraft.changeLog
     }
   },
   { deep: true }
@@ -410,34 +411,73 @@ function handleCardClick(e: MouseEvent) {
   }
 }
 
-// 当前选中的实节点
-const activeCommitSummary = computed<CommitNode | undefined>(() => {
-  if (!props.card.activeCommitId || props.card.activeCommitId === 'draft') {
-    return store.getLatestCommit(props.card)
+// 当前作为基准的实节点（历史节点或最新节点）
+const currentBaseCommit = computed<CommitNode | undefined>(() => {
+  const baseId = props.card.draft.baseCommitId || (props.card.activeCommitId && props.card.activeCommitId !== 'draft' ? props.card.activeCommitId : '')
+  if (baseId) {
+    const found = props.card.commits.find((c) => c.id === baseId)
+    if (found) return found
   }
-  return props.card.commits.find((c) => c.id === props.card.activeCommitId)
+  return store.getLatestCommit(props.card)
 })
 
-// 判断当前内容是否相对选中历史节点有改动 (Dirty)
+// 当前展示/选中的提交摘要
+const activeCommitSummary = computed<CommitNode | undefined>(() => {
+  if (props.card.activeCommitId && props.card.activeCommitId !== 'draft') {
+    const commit = props.card.commits.find((c) => c.id === props.card.activeCommitId)
+    if (commit) return commit
+  }
+  return currentBaseCommit.value
+})
+
+// 判断当前内容是否相对基准节点有改动 (Dirty)
+// 改进点 1：若编辑最后恢复原样（标题、内容与基准完全一致且无变更日志），自动退出 Draft 状态
 const isDraftDirty = computed(() => {
-  if (!props.card.activeCommitId || props.card.activeCommitId === 'draft') return true
-  const active = activeCommitSummary.value
-  if (!active) return true
+  const base = currentBaseCommit.value
+  if (!base) {
+    return (
+      draftTitle.value.trim().length > 0 ||
+      draftContent.value.trim().length > 0 ||
+      draftChangeLog.value.trim().length > 0
+    )
+  }
   return (
-    draftTitle.value !== active.title ||
-    draftContent.value !== active.content ||
+    draftTitle.value !== base.title ||
+    draftContent.value !== base.content ||
     draftChangeLog.value.trim().length > 0
   )
 })
 
-// 自动保存防抖 & 自动切入 Draft 阶段
+// 传给版本树的有效活跃节点与基准节点（确保分支预览紧跟所选历史节点，绝不跳回最新节点）
+const effectiveActiveCommitId = computed(() => {
+  if (isDraftDirty.value) return 'draft'
+  return props.card.activeCommitId || currentBaseCommit.value?.id || ''
+})
+
+const effectiveBaseCommitId = computed(() => {
+  return currentBaseCommit.value?.id || ''
+})
+
+// 监听 isDraftDirty：一旦恢复原样，自动同步退出 Draft 状态
+watch(isDraftDirty, (dirty) => {
+  if (!dirty) {
+    if (currentBaseCommit.value) {
+      props.card.activeCommitId = currentBaseCommit.value.id
+      props.card.draft.baseCommitId = currentBaseCommit.value.id
+      store.saveToStorage()
+    }
+  } else {
+    props.card.activeCommitId = 'draft'
+  }
+})
+
+// 自动保存防抖
 let debounceTimer: ReturnType<typeof setTimeout> | null = null
 function onDraftInput() {
-  // 一旦发生输入修改，树状图立即脱离历史节点，进入工作区草稿阶段
-  if (props.card.activeCommitId && props.card.activeCommitId !== 'draft') {
-    if (isDraftDirty.value) {
-      store.selectGhostDraft(props.card.id)
-    }
+  if (isDraftDirty.value) {
+    props.card.activeCommitId = 'draft'
+  } else if (currentBaseCommit.value) {
+    props.card.activeCommitId = currentBaseCommit.value.id
   }
 
   if (debounceTimer) clearTimeout(debounceTimer)
@@ -446,6 +486,7 @@ function onDraftInput() {
       title: draftTitle.value,
       content: draftContent.value,
       changeLog: draftChangeLog.value,
+      baseCommitId: currentBaseCommit.value?.id || '',
     })
   }, 300)
 }
@@ -461,20 +502,25 @@ const canCommit = computed(() => {
 
 // 是否处于查看历史非尖端节点模式
 const isViewingHistorical = computed(() => {
-  if (!props.card.activeCommitId || props.card.activeCommitId === 'draft') return false
+  const base = currentBaseCommit.value
   const latest = store.getLatestCommit(props.card)
-  if (!latest) return false
-  return props.card.activeCommitId !== latest.id
+  if (!base || !latest) return false
+  return base.id !== latest.id
 })
 
-// 是否为分叉模式 (Create Branch & Commit)
+// 是否为分叉模式 (改进点 2：在已有子节点的历史提交上编辑，自动显示“创建分支并提交”)
 const isBranchMode = computed(() => {
-  if (!props.card.activeCommitId || props.card.activeCommitId === 'draft') return false
-  return !store.isLeafCommit(props.card, props.card.activeCommitId)
+  const base = currentBaseCommit.value
+  if (!base) return false
+  return !store.isLeafCommit(props.card, base.id)
 })
 
 // 当前活跃分支名
 const currentBranchName = computed(() => {
+  if (isBranchMode.value) {
+    const existingBranches = new Set(props.card.commits.map((c) => c.branchName))
+    return `branch-${existingBranches.size} (new)`
+  }
   if (activeCommitSummary.value) {
     return activeCommitSummary.value.branchName
   }
@@ -494,11 +540,17 @@ function onSelectCommit(commitId: string) {
 }
 
 function onSelectGhost() {
-  store.selectGhostDraft(props.card.id)
+  if (!isDraftDirty.value) {
+    const el = document.getElementById(`discussion-content-${props.card.id}`) || document.getElementById(`discussion-title-${props.card.id}`)
+    el?.focus()
+  }
 }
 
 function resetToGhostDraft() {
-  store.selectGhostDraft(props.card.id)
+  const latest = store.getLatestCommit(props.card)
+  if (latest) {
+    onSelectCommit(latest.id)
+  }
 }
 
 // 提交
@@ -507,6 +559,7 @@ function handleCommit() {
     title: draftTitle.value,
     content: draftContent.value,
     changeLog: draftChangeLog.value,
+    baseCommitId: currentBaseCommit.value?.id || '',
   })
   store.commitCard(props.card.id)
   draftChangeLog.value = ''

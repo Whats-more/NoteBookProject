@@ -18,16 +18,16 @@
       <div class="tree-legend">
         <span
           class="legend-item"
-          :class="{ 'legend-dimmed': isDraftMode }"
-          title="点击查看历史提交快照"
+          :class="{ 'legend-active': !isDraftMode, 'legend-dimmed': isDraftMode }"
+          title="当前处于历史提交快照状态"
         >
           <span class="dot solid"></span> 历史提交
         </span>
         <span
           class="legend-item legend-draft"
-          :class="{ 'legend-active': isDraftMode }"
-          title="当前处于未提交的工作区草稿阶段"
-          @click="$emit('selectGhost')"
+          :class="{ 'legend-active': isDraftMode, 'legend-dimmed': !isDraftMode }"
+          title="未提交的工作区草稿"
+          @click="handleGhostClick"
         >
           <span class="dot ghost" :class="{ pulse: isDraftMode }"></span>
           <span class="legend-text">工作区草稿</span>
@@ -39,6 +39,8 @@
     <div
       ref="containerRef"
       class="version-tree-container"
+      :class="{ 'is-panning': isPanning }"
+      @mousedown="onMouseDown"
       @wheel="onWheel"
     >
       <svg
@@ -82,11 +84,11 @@
           :key="node.commitId"
           class="node-group"
           :class="{ 'node-active': !isDraftMode && node.commitId === activeCommitId }"
-          @click.stop="$emit('selectCommit', node.commitId)"
+          @click.stop="handleNodeClick(node.commitId)"
         >
           <title>{{ getNodeTooltip(node.commitId) }}</title>
 
-          <!-- 扩大点击热区 (半径 18px，保证鼠标精确选取) -->
+          <!-- 扩大点击热区 (半径 18px，保证鼠标精确选取且绝对平稳) -->
           <circle
             :cx="node.x"
             :cy="node.y"
@@ -155,10 +157,10 @@
         <g
           v-if="ghostNode"
           class="node-group node-ghost"
-          :class="{ 'node-active': isDraftMode }"
-          @click.stop="$emit('selectGhost')"
+          :class="{ 'node-active': isDraftMode, 'ghost-idle': !isDraftMode }"
+          @click.stop="handleGhostClick"
         >
-          <title>未提交的工作区草稿 (点击切换回此节点)</title>
+          <title>{{ isDraftMode ? '未提交的工作区草稿 (点击切换回此节点)' : '基于选定节点的草稿 (点击开始编辑)' }}</title>
 
           <!-- 扩大点击热区 -->
           <circle
@@ -205,6 +207,18 @@
           >
             draft
           </text>
+
+          <!-- 虚节点分支名提示 (若处于历史节点分叉中) -->
+          <text
+            v-if="ghostNode.lane > 0"
+            :x="ghostNode.x"
+            :y="ghostNode.y - 12"
+            class="branch-tag-text"
+            text-anchor="middle"
+            :style="{ fill: ghostNodeColor }"
+          >
+            {{ ghostNode.branchName }} (new)
+          </text>
         </g>
       </svg>
     </div>
@@ -212,7 +226,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, onBeforeUnmount } from 'vue'
 import type { CommitNode, GraphNodePosition } from '~/types/notebook'
 
 interface ExtendedNodePosition extends GraphNodePosition {
@@ -224,23 +238,88 @@ const props = withDefaults(
   defineProps<{
     commits: CommitNode[]
     activeCommitId: string
+    baseCommitId?: string
     showGhost?: boolean
     mergeParentIds?: string[]
     isDraftActive?: boolean
   }>(),
   {
+    baseCommitId: '',
     showGhost: true,
     mergeParentIds: () => [],
     isDraftActive: false,
   }
 )
 
-defineEmits<{
+const emit = defineEmits<{
   selectCommit: [commitId: string]
   selectGhost: []
 }>()
 
 const containerRef = ref<HTMLElement | null>(null)
+const isMouseDown = ref(false)
+const isPanning = ref(false)
+let startX = 0
+let scrollLeftStart = 0
+
+// --- 鼠标拖拽平移视图 (Drag-to-pan) ---
+function onMouseDown(e: MouseEvent) {
+  if (e.button !== 0) return // 仅响应鼠标左键
+  if (!containerRef.value) return
+
+  isMouseDown.value = true
+  isPanning.value = false
+  startX = e.clientX
+  scrollLeftStart = containerRef.value.scrollLeft
+
+  window.addEventListener('mousemove', onMouseMove, { passive: false })
+  window.addEventListener('mouseup', onMouseUp)
+}
+
+function onMouseMove(e: MouseEvent) {
+  if (!isMouseDown.value || !containerRef.value) return
+  const dx = e.clientX - startX
+  if (Math.abs(dx) > 3) {
+    isPanning.value = true
+    e.preventDefault()
+    containerRef.value.scrollLeft = scrollLeftStart - dx
+  }
+}
+
+function onMouseUp() {
+  if (!isMouseDown.value) return
+  isMouseDown.value = false
+  window.removeEventListener('mousemove', onMouseMove)
+  window.removeEventListener('mouseup', onMouseUp)
+
+  // 短暂延时重置平移状态，防止拖动松开瞬间触发点击选取
+  if (isPanning.value) {
+    setTimeout(() => {
+      isPanning.value = false
+    }, 50)
+  }
+}
+
+onBeforeUnmount(() => {
+  window.removeEventListener('mousemove', onMouseMove)
+  window.removeEventListener('mouseup', onMouseUp)
+})
+
+function onWheel(e: WheelEvent) {
+  if (containerRef.value) {
+    containerRef.value.scrollLeft += (e.deltaX || e.deltaY)
+  }
+}
+
+function handleNodeClick(commitId: string) {
+  if (isPanning.value) return
+  emit('selectCommit', commitId)
+}
+
+function handleGhostClick() {
+  if (isPanning.value) return
+  emit('selectGhost')
+}
 
 // --- 常量与间距 ---
 const NODE_GAP_X = 72
@@ -319,13 +398,11 @@ function isBranchTip(node: ExtendedNodePosition): boolean {
 const isDraftMode = computed(() => {
   return (
     props.isDraftActive ||
-    !props.activeCommitId ||
-    props.activeCommitId === 'draft' ||
-    props.activeCommitId === ''
+    props.activeCommitId === 'draft'
   )
 })
 
-// 虚节点（草稿）计算：支持多合一 Merge 汇聚
+// 虚节点（草稿）计算：支持多合一 Merge 汇聚与基于历史节点派生分支
 const ghostNode = computed<ExtendedNodePosition | null>(() => {
   if (!props.showGhost) return null
 
@@ -358,14 +435,16 @@ const ghostNode = computed<ExtendedNodePosition | null>(() => {
     }
   }
 
-  // 常规情况：查看当前选中的节点
-  const activeNode = solidNodes.value.find((n) => n.commitId === props.activeCommitId)
-  const baseNode = activeNode || solidNodes.value[solidNodes.value.length - 1]
+  // 常规情况：查看当前选中的基准节点（优先 baseCommitId，其次 activeCommitId，最后最新节点）
+  const targetId = props.baseCommitId || (props.activeCommitId && props.activeCommitId !== 'draft' ? props.activeCommitId : '')
+  const baseNode =
+    (targetId ? solidNodes.value.find((n) => n.commitId === targetId) : null) ||
+    solidNodes.value[solidNodes.value.length - 1]
 
   const hasChildren = solidNodes.value.some((n) => n.parentIds.includes(baseNode.commitId))
 
   if (hasChildren) {
-    // 基于历史节点修改 -> 分叉新轨道
+    // 基于历史已有子节点的节点修改 -> 分叉新轨道
     const maxLane = Math.max(...solidNodes.value.map((n) => n.lane))
     const ghostLane = maxLane + 1
     return {
@@ -375,7 +454,7 @@ const ghostNode = computed<ExtendedNodePosition | null>(() => {
       lane: ghostLane,
       x: PADDING_X + (maxCol + 1) * NODE_GAP_X,
       y: PADDING_Y + ghostLane * NODE_GAP_Y,
-      branchName: 'new-branch',
+      branchName: `branch-${branchNames.value.length}`,
       parentIds: [baseNode.commitId],
     }
   } else {
@@ -420,7 +499,7 @@ const allEdges = computed(() => {
     }
   }
 
-  // 虚节点（草稿）连线：若是多父节点合并，同时绘制多条汇聚虚线
+  // 虚节点（草稿）连线：若是多父节点合并，同时绘制多条汇聚虚线；若是分叉，从基准历史节点连出
   if (ghostNode.value && ghostNode.value.parentIds.length > 0) {
     const gn = ghostNode.value
     for (const parentId of gn.parentIds) {
@@ -471,12 +550,6 @@ const svgHeight = computed(() => {
   return PADDING_Y * 2 + maxLane * NODE_GAP_Y + 28
 })
 
-function onWheel(e: WheelEvent) {
-  if (containerRef.value) {
-    containerRef.value.scrollLeft += (e.deltaX || e.deltaY)
-  }
-}
-
 function getNodeTooltip(commitId: string): string {
   const commit = props.commits.find((c) => c.id === commitId)
   if (!commit) return commitId
@@ -491,6 +564,8 @@ function getNodeTooltip(commitId: string): string {
   flex-direction: column;
   gap: var(--space-xs);
   width: 100%;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .tree-header-bar {
@@ -544,7 +619,12 @@ function getNodeTooltip(commitId: string): string {
   transition: all var(--duration-fast) var(--ease-out);
 }
 .legend-dimmed {
-  opacity: 0.5;
+  opacity: 0.45;
+}
+
+.legend-item.legend-active {
+  color: var(--color-text-primary);
+  font-weight: 600;
 }
 
 .legend-draft.legend-active {
@@ -591,10 +671,26 @@ function getNodeTooltip(commitId: string): string {
   border: 1px solid var(--color-border);
   position: relative;
   scrollbar-width: thin;
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: grab;
+  touch-action: pan-x;
+}
+
+.version-tree-container.is-panning {
+  cursor: grabbing;
+}
+
+.version-tree-container.is-panning * {
+  cursor: grabbing !important;
+  user-select: none !important;
+  -webkit-user-select: none !important;
 }
 
 .version-tree-svg {
   display: block;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .lane-guide-line {
@@ -613,12 +709,28 @@ function getNodeTooltip(commitId: string): string {
   opacity: 0.75;
 }
 
+/* 消除所有 SVG 几何形变导致的抖动，使用平滑描边与投影高亮 */
 .node-group {
   cursor: pointer;
-  transition: transform var(--duration-fast) var(--ease-spring);
 }
-.node-group:hover {
-  transform: scale(1.15);
+
+.node-group:hover .node-circle {
+  stroke-width: 3.5;
+  filter: drop-shadow(0 0 6px var(--color-accent-glow));
+}
+
+.node-group:hover .ghost-circle {
+  stroke-width: 3;
+  filter: drop-shadow(0 0 6px var(--color-accent-glow));
+}
+
+.node-ghost.ghost-idle {
+  opacity: 0.55;
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+
+.node-ghost.ghost-idle:hover {
+  opacity: 0.95;
 }
 
 .active-halo {
@@ -627,6 +739,7 @@ function getNodeTooltip(commitId: string): string {
   stroke-dasharray: 3 3;
   animation: rotateHalo 8s linear infinite;
   opacity: 0.9;
+  pointer-events: none;
 }
 
 .draft-active-halo {
@@ -644,7 +757,7 @@ function getNodeTooltip(commitId: string): string {
 
 .node-circle {
   stroke-width: 2.5;
-  transition: all var(--duration-fast) var(--ease-out);
+  transition: stroke-width var(--duration-fast) var(--ease-out), filter var(--duration-fast) var(--ease-out);
 }
 .node-inner {
   transition: fill var(--duration-fast) var(--ease-out);
